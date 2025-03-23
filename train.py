@@ -309,6 +309,7 @@ if __name__ == '__main__':
       model = Transformer(num_layers=6, D=16, H=10, hidden_mlp_dim=32, inp_features=11, out_features=1, dropout_rate=0.1, attention_type='regular', SL=SEQ_LENGTH).to(device) # cosine_square, cosine, regular # 6L, 12H
       # model = TransLSTM(num_layers=3, D=16, H=5, hidden_mlp_dim=32, inp_features=11, out_features=1, dropout_rate=0.2, LSTM_module = LSTM(4, INPUT_DIM+1, HIDDEN_DIM, LAYER_DIM, bidirectional = False).to(device), attention_type='regular').to(device) # cosine_square, cosine, regular # 6L, 12H
       # model = LSTM(1, INPUT_DIM+1, HIDDEN_DIM, LAYER_DIM).cuda()
+      # model = MultiHeadAttentionCosSquareformerNew(D=16, H=10)
 
       opt = torch.optim.Adam(model.parameters(), lr=lr)
       #device = torch.device("cpu")
@@ -389,3 +390,4 @@ if __name__ == '__main__':
           if eval_mse < best_mse:
             best_model = deepcopy(model)
             best_mse = eval_mse
+
