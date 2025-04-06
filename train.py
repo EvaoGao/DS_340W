@@ -28,7 +28,7 @@ warnings.filterwarnings('ignore')
 
 # Data Pre-processing
 
-df = pd.read_csv("city_pollution_data.csv")
+df = pd.read_csv("city_pollution_data2.csv")
 
 DROP_ONEHOT = True
 SEQ_LENGTH = 7
@@ -60,6 +60,10 @@ def get_train_test_data(df):
   # Getting month id is easy from the datetime column. 
   # For day of week, we'll use datetime library.
   
+  #df['weekday'] = df['Date'].apply(lambda x: datetime.strptime(x, "%Y-%m-%d").weekday())
+  #df['month'] = df['Date'].apply(lambda x: datetime.strptime(x, "%Y-%m-%d").month - 1)
+  #df['weekday'] = df['Date'].apply(lambda x: datetime.strptime(x, "%Y/%m/%d").weekday())
+  #df['month'] = df['Date'].apply(lambda x: datetime.strptime(x, "%Y/%m/%d").month - 1)
   df['weekday'] = df['Date'].apply(lambda x: datetime.strptime(x, "%Y-%m-%d").weekday())
   df['month'] = df['Date'].apply(lambda x: datetime.strptime(x, "%Y-%m-%d").month - 1)
 
@@ -302,16 +306,22 @@ if __name__ == '__main__':
       sampleLoader = DataLoader(train_data, 32, shuffle=True, num_workers=4)
       val_loader = DataLoader(val_data, 4096, shuffle=False, num_workers=4)
 
-      lr = 0.001
-      n_epochs = 10
+      lr = 0.00001
+      n_epochs = 100
+      RMSE_list = []
+      MAPE_list = []
 
       criterion = nn.MSELoss()
-      model = Transformer(num_layers=6, D=16, H=10, hidden_mlp_dim=32, inp_features=11, out_features=1, dropout_rate=0.1, attention_type='regular', SL=SEQ_LENGTH).to(device) # cosine_square, cosine, regular # 6L, 12H
+      #criterion = CombinedLoss(mse_weight=1.0, sdtw_weight=0.5, gamma=0.1, normalize=False)
+      #model = Transformer(num_layers=2, D=16, H=4, hidden_mlp_dim=16, inp_features=11, out_features=1, dropout_rate=0.5, attention_type='regular', SL=SEQ_LENGTH).to(device) # cosine_square, cosine, regular # 6L, 12H
       # model = TransLSTM(num_layers=3, D=16, H=5, hidden_mlp_dim=32, inp_features=11, out_features=1, dropout_rate=0.2, LSTM_module = LSTM(4, INPUT_DIM+1, HIDDEN_DIM, LAYER_DIM, bidirectional = False).to(device), attention_type='regular').to(device) # cosine_square, cosine, regular # 6L, 12H
       # model = LSTM(1, INPUT_DIM+1, HIDDEN_DIM, LAYER_DIM).cuda()
-      # model = MultiHeadAttentionCosSquareformerNew(D=16, H=10)
-
-      opt = torch.optim.Adam(model.parameters(), lr=lr)
+      #model = MultiHeadAttentionCosSquareformerNew(D=16, H=10).to(device)
+      #model = MultiHeadAttentionCosSquareformerWithProj(D=11, H=10).to(device)
+      #model = MultiHeadAttentionCosSquareformer(D=11, H=10).to(device)
+      model = CosSquareFormerModel(input_dim=11,D=32,H=4,N_layers=4,ff_dim=128,dropout=0.3,max_seq_len=64)
+      #opt = torch.optim.Adam(model.parameters(), lr=lr)
+      opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
       #device = torch.device("cpu")
       #model = model.to(device)
 
@@ -320,22 +330,26 @@ if __name__ == '__main__':
       print('Start model training')
       best_mse = 2000.0
       best_model = None
+      best_epoch = 0
 
       for epoch in range(1, n_epochs + 1):
           epoch_loss = 0
           batch_idx = 0
-          bar = tqdm(sampleLoader) 
+          #bar = tqdm(sampleLoader) 
+          bar = tqdm(sampleLoader, disable=True)
 
           model.train()
           for x_batch, y_batch, _ in bar:
-              print(f"\ntraining: epoch[{epoch}/{n_epochs+1}]")
+              #print(f"\nTraining: epoch[{epoch}/{n_epochs}]")
               model.train()
               x_batch = x_batch.to(device).float()
               y_batch = y_batch.to(device).float()
 
               mask = create_look_ahead_mask(x_batch.shape[1])
               out, _ = model(x_batch, mask)
+              #out = out[:,:,-1:]
               opt.zero_grad()
+              #print(out.shape, y_batch.shape)
 
               loss = criterion(out[:,-1,:], y_batch[:,-1,:]) + lmbda * dtw_loss(out.to(device),y_batch.to(device)).mean()
 
@@ -356,8 +370,9 @@ if __name__ == '__main__':
           for x_val, _, y_val in val_loader:
               x_val, y_val = [t.to(device).float() for t in (x_val, y_val)]
               mask = create_look_ahead_mask(x_val.shape[1])
-
               out, _ = model(x_val, mask)
+              #out = out[:,:,-1:]
+              print(out.shape, y_val.shape)
 
               ytrue = y_val[:,-1,:].squeeze().cpu().numpy()
               ypred = out[:,-1,:].squeeze().cpu().detach().numpy()
@@ -383,6 +398,7 @@ if __name__ == '__main__':
           eval_mse = total_se / total_valid # np.mean(se) # 
           eval_mape = total_pe / total_valid # np.mean(pe) # 
           print('valid samples:', total_valid)
+          print("Epoch: ", epoch)
           print('Eval MSE: ', eval_mse)
           print('Eval RMSE: {}: '.format(SELECTED_COLUMN), np.sqrt(eval_mse))
           print('Eval MAPE: {}: '.format(SELECTED_COLUMN), eval_mape*100)
@@ -390,4 +406,10 @@ if __name__ == '__main__':
           if eval_mse < best_mse:
             best_model = deepcopy(model)
             best_mse = eval_mse
+            best_epoch = epoch
+            torch.save(best_model.state_dict(), f"cosSquareFormer{best_epoch}.pth")
+          
+          RMSE_list.append(np.sqrt(eval_mse))
+          MAPE_list.append(eval_mape*100)
+      
 
