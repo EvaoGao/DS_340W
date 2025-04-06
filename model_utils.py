@@ -318,6 +318,152 @@ class MultiHeadAttentionCosSquareformerNew(nn.Module):
 
         return output, None
 
+
+class MultiHeadAttentionCosSquareformer(torch.nn.Module):
+    """
+    Multi-head self-attention with cos^2-based re-weighting.
+    If causal_mask is provided, it should be shape (S, S) with 
+    1 = positions not allowed to attend (above diagonal),
+    0 = allowed positions. We'll fill those with -inf in the attention logits.
+    """
+    def __init__(self, D, H):
+        super().__init__()
+        self.D = D  # hidden dimension
+        self.H = H  # number of heads
+
+        # Learnable linear transforms for queries, keys, values
+        self.wq = torch.nn.Linear(D, D*H)
+        self.wk = torch.nn.Linear(D, D*H)
+        self.wv = torch.nn.Linear(D, D*H)
+
+        # Project the multi-head output back to D
+        self.dense = torch.nn.Linear(D*H, D)
+
+        # Example final projection to scalar
+        self.out_proj = torch.nn.Linear(D, 1)
+
+    def split_heads(self, x):
+        """
+        (B, S, D*H) -> (B, H, S, D)
+        """
+        B, S, D_H = x.shape
+        assert D_H == self.D*self.H
+        x = x.view(B, S, self.H, self.D)
+        x = x.permute(0, 2, 1, 3)  # (B,H,S,D)
+        return x
+
+    def concat_heads(self, x):
+        """
+        (B, H, S, D) -> (B, S, D*H)
+        """
+        B, H, S, D = x.shape
+        x = x.permute(0, 2, 1, 3).contiguous()  # (B,S,H,D)
+        x = x.view(B, S, H*D)                   # (B,S,D*H)
+        return x
+
+    def forward(self, x, causal_mask=None):
+        """
+        x: (B, S, D)
+        causal_mask: (S, S), with 1's where positions should not attend
+                     (i.e. above the diagonal for look-ahead).
+                     None if no masking is required.
+        return: (B, S, 1)
+        """
+        device = x.device
+        B, S, D = x.shape
+        assert D == self.D
+
+        # Project to Q,K,V
+        q = self.wq(x)  # (B,S,D*H)
+        k = self.wk(x)  # (B,S,D*H)
+        v = self.wv(x)  # (B,S,D*H)
+
+        #Split into heads
+        q = self.split_heads(q)  # (B,H,S,D)
+        k = self.split_heads(k)
+        v = self.split_heads(v)
+
+        #Scale by sqrt(d_head)
+        d_head = float(self.D)
+        q = q * (d_head ** -0.5)
+        k = k * (d_head ** -0.5)
+
+        # Nonlinearities if desired (like elu+1)
+        q = F.elu(q) + 1.0
+        k = F.elu(k) + 1.0
+
+        #  Build cos^2, sin^2 factors over time
+        cos_vals = torch.cos(math.pi * torch.arange(S, device=device) / S) ** 2
+        sin_vals = torch.sin(math.pi * torch.arange(S, device=device) / S) ** 2
+
+        #shape (S,) -> (B,S) by expand
+        cos_vals = cos_vals.unsqueeze(0).expand(B, S)
+        sin_vals = sin_vals.unsqueeze(0).expand(B, S)
+
+        # Weighted q, k by cos^2, sin^2
+        q_cos = torch.einsum("bhjd,bs->bhjd", q, cos_vals)
+        q_sin = torch.einsum("bhjd,bs->bhjd", q, sin_vals)
+        k_cos = torch.einsum("bhjd,bs->bhjd", k, cos_vals)
+        k_sin = torch.einsum("bhjd,bs->bhjd", k, sin_vals)
+
+        eps = 1e-6
+
+        # [B,H,S,D] -> [B,H,S,1,D]
+        q_5d     = q.unsqueeze(3)      # (B,H,S,1,D)
+        k_5d     = k.unsqueeze(2)      # (B,H,1,S,D)
+        attn1    = (q_5d * k_5d).sum(dim=-1)  # (B,H,S,S)
+
+        q_cos_5d = q_cos.unsqueeze(3)
+        k_cos_5d = k_cos.unsqueeze(2)
+        attn2    = (q_cos_5d * k_cos_5d).sum(dim=-1) # (B,H,S,S)
+
+        q_sin_5d = q_sin.unsqueeze(3)
+        k_sin_5d = k_sin.unsqueeze(2)
+        attn3    = (q_sin_5d * k_sin_5d).sum(dim=-1)
+
+        # attention_scores shape: (B,H,S,S)
+        attention_scores = attn1 + attn2 + attn3
+
+        # Optionally mask out future positions:
+        if causal_mask is not None:
+            # causal_mask shape: (S,S) with 1= block, 0= keep
+            # broadcast to (B,H,S,S)
+            attention_scores = attention_scores.masked_fill(causal_mask.bool(), float('-inf'))
+
+        #Convert to valid probabilities
+        attn_weights = F.softmax(attention_scores, dim=-1)  # shape (B,H,S,S)
+
+        # Multiply attn_weights by V for each position
+        # V shape: (B,H,S,D). We'll do something like:
+        # (B,H,S,S) x (B,H,S,D) => need to broadcast the second to (B,H,S,S,D)?
+        # We'll do a standard batch matmul approach:
+        # We can do:
+        # out = torch.einsum('bhss,bhsd->bhsd', attn_weights, v)
+        out = torch.einsum('bhss,bhsd->bhsd', attn_weights, v)
+
+        # Combine heads => (B, S, D)
+        out = self.concat_heads(out)
+
+        # Final linear to dimension D, then a single scalar
+        out = self.dense(out)       # (B, S, D)
+        out = self.out_proj(out)    # (B, S, 1)
+
+        return out, attn_weights
+
+
+
+class MultiHeadAttentionCosSquareformerWithProj(nn.Module):
+    '''Multi-head self-attention module with output projection layer'''
+    def __init__(self, D, H, out_features=1):
+        super(MultiHeadAttentionCosSquareformerWithProj, self).__init__()
+        self.attention = MultiHeadAttentionCosSquareformerNew(D, H)
+        self.proj = nn.Linear(D, out_features)
+    
+    def forward(self, x, mask):
+        out, _ = self.attention(x, mask)
+        out = self.proj(out)
+        return out, None
+
 # Positional encodings
 def get_angles(pos, i, D):
     angle_rates = 1 / np.power(10000, (2 * (i // 2)) / np.float32(D))
@@ -441,6 +587,239 @@ class TransLSTM(nn.Module):
         
         x = self.output_projection(x)
 
+        x = torch.cat((x,x_l),axis=2)
+
+        x = self.fc(x)
+        
+        return x, attention_weights # (B,S,S)
+    
+
+
+
+
+
+
+
+
+class CosSquareAttention(nn.Module):
+    """
+    Multi-head self-attention with cos^2-based re-weighting (single layer).
+    """
+    def __init__(self, D, H):
+        super().__init__()
+        self.D = D  # hidden dimension
+        self.H = H  # number of heads
+
+        # Q, K, V
+        self.wq = nn.Linear(D, D * H)
+        self.wk = nn.Linear(D, D * H)
+        self.wv = nn.Linear(D, D * H)
+
+        # Combine heads back to dimension D
+        self.dense = nn.Linear(D * H, D)
+
+    def split_heads(self, x):
+        B, S, D_H = x.shape
+        assert D_H == self.D * self.H
+        x = x.view(B, S, self.H, self.D)  # (B,S,H,D)
+        x = x.permute(0, 2, 1, 3)         # (B,H,S,D)
+        return x
+
+    def concat_heads(self, x):
+        B, H, S, D = x.shape
+        x = x.permute(0, 2, 1, 3).contiguous()  # (B,S,H,D)
+        x = x.view(B, S, H * D)                 # (B,S,D*H)
+        return x
+
+    def forward(self, x, causal_mask=None):
+        """
+        x: (B,S,D)
+        causal_mask: (S,S) with 1 where future positions are blocked, 0 otherwise
+        returns: (B,S,D)
+        """
+        B, S, D = x.shape
+
+        # 1) Compute Q,K,V
+        q = self.wq(x)  # (B,S,D*H)
+        k = self.wk(x)  
+        v = self.wv(x)
+
+        # 2) Reshape
+        q = self.split_heads(q)  # (B,H,S,D)
+        k = self.split_heads(k)  
+        v = self.split_heads(v)
+
+        # 3) Scale by sqrt(d_head)
+        d_head = float(self.D)
+        q = q * (d_head ** -0.5)
+        k = k * (d_head ** -0.5)
+
+        # 4) Activation (ELU+1)
+        q = F.elu(q) + 1
+        k = F.elu(k) + 1
+
+        # 5) Build cos^2, sin^2 weighting across the sequence dimension S
+        device = x.device
+        cos_vals = torch.cos(math.pi * torch.arange(S, device=device)/S) ** 2
+        sin_vals = torch.sin(math.pi * torch.arange(S, device=device)/S) ** 2
+        # shape (S,) -> broadcast to (B,S)
+        cos_vals = cos_vals.unsqueeze(0).expand(B, S)
+        sin_vals = sin_vals.unsqueeze(0).expand(B, S)
+
+        # Weighted Q,K
+        q_cos = torch.einsum('bhjd,bs->bhjd', q, cos_vals)
+        q_sin = torch.einsum('bhjd,bs->bhjd', q, sin_vals)
+        k_cos = torch.einsum('bhjd,bs->bhjd', k, cos_vals)
+        k_sin = torch.einsum('bhjd,bs->bhjd', k, sin_vals)
+
+        # 6) Convert to attention scores
+        # We'll do a standard batch matmul approach: shape (B,H,S,S)
+
+        # Expand Q, K to 5D so we can sum over D:
+        q_5d     = q.unsqueeze(3)      # (B,H,S,1,D)
+        k_5d     = k.unsqueeze(2)      # (B,H,1,S,D)
+        attn1    = (q_5d * k_5d).sum(dim=-1)  # (B,H,S,S)
+
+        q_cos_5d = q_cos.unsqueeze(3)
+        k_cos_5d = k_cos.unsqueeze(2)
+        attn2    = (q_cos_5d * k_cos_5d).sum(dim=-1)
+
+        q_sin_5d = q_sin.unsqueeze(3)
+        k_sin_5d = k_sin.unsqueeze(2)
+        attn3    = (q_sin_5d * k_sin_5d).sum(dim=-1)
+
+        # attention_scores => (B,H,S,S)
+        attention_scores = attn1 + attn2 + attn3
+
+        # 7) Optional causal masking
+        if causal_mask is not None:
+            attention_scores = attention_scores.masked_fill(causal_mask.bool(), float('-inf'))
+
+        # 8) Softmax
+        attn_weights = F.softmax(attention_scores, dim=-1)  # (B,H,S,S)
+
+        # 9) Weighted sum over V => (B,H,S,D)
+        out = torch.einsum('bhss,bhsd->bhsd', attn_weights, v)
+
+        # 10) Combine heads => (B,S,D)
+        out = self.concat_heads(out)
+
+        # 11) Final linear
+        out = self.dense(out)  # (B,S,D)
+
+        return out
+    
+
+class CosSquareFormerEncoderLayer(nn.Module):
+    """
+    One encoder block with:
+    - CosSquare self-attention
+    - Residual + LN
+    - Feed-forward MLP
+    - Another residual + LN
+    """
+    def __init__(self, D, H, ff_dim=256, dropout=0.1):
+        super().__init__()
+        self.attn = CosSquareAttention(D, H)
+        self.norm1 = nn.LayerNorm(D)
+        self.norm2 = nn.LayerNorm(D)
+
+        # Simple feed-forward
+        self.mlp = nn.Sequential(
+            nn.Linear(D, ff_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(ff_dim, D),
+            nn.Dropout(dropout),
+        )
+        self.dropout_attn = nn.Dropout(dropout)
+        self.dropout_mlp  = nn.Dropout(dropout)
+
+    def forward(self, x, mask=None):
+        # x shape: (B,S,D)
+        
+        # 1) Pre-norm approach: LN -> attn -> residual
+        x_ln = self.norm1(x)
+        attn_out = self.attn(x_ln, mask)  # (B,S,D)
+        attn_out = self.dropout_attn(attn_out)
+        x = x + attn_out
+
+        # 2) LN -> MLP -> residual
+        x_ln = self.norm2(x)
+        mlp_out = self.mlp(x_ln)  # (B,S,D)
+        x = x + mlp_out
+        return x
+
+class CosSquareFormerEncoder(nn.Module):
+    """
+    Stacked CosSquareFormer layers, with optional positional encoding.
+    """
+    def __init__(self, D, H, N_layers=4, ff_dim=256, dropout=0.1, max_seq_len=512):
+        super().__init__()
+        self.layers = nn.ModuleList([
+            CosSquareFormerEncoderLayer(D, H, ff_dim, dropout) 
+            for _ in range(N_layers)
+        ])
+        self.norm_final = nn.LayerNorm(D)
+
+        # Optional positional embedding:
+        self.pos_embed = nn.Parameter(torch.zeros(1, max_seq_len, D))
+        self.max_seq_len = max_seq_len
+
+    def forward(self, x, mask=None):
+        """
+        x: (B,S,D)
+        mask: (B,H,S,S) or (S,S) broadcast
+        returns: (B,S,D)
+        """
+        B, S, D = x.shape
+        if S > self.max_seq_len:
+            raise ValueError(f"Sequence length {S} exceeds max_seq_len {self.max_seq_len}")
+        # Add positional embedding
+        x = x + self.pos_embed[:, :S, :]
+
+        # Pass through each encoder layer
+        for layer in self.layers:
+            x = layer(x, mask=mask)
+
+        # Final LN
+        x = self.norm_final(x)
+        return x
+    
+class CosSquareFormerModel(nn.Module):
+    """
+    Full model with:
+    - Optional input projection from raw features
+    - Stacked CosSquareFormer layers
+    - Final projection to 1 dimension
+    """
+    def __init__(self, 
+                 input_dim,   # number of raw input features
+                 D,           # internal hidden dimension
+                 H,           # number of heads
+                 N_layers=4, 
+                 ff_dim=256, 
+                 dropout=0.1, 
+                 max_seq_len=512):
+        super().__init__()
+        self.input_proj = nn.Linear(input_dim, D)
+        self.encoder = CosSquareFormerEncoder(D, H, N_layers, ff_dim, dropout, max_seq_len)
+        self.out_proj = nn.Linear(D, 1)
+
+    def forward(self, x, mask=None):
+        """
+        x: (B,S,input_dim)
+        returns: (B,S,1)
+        """
+        # 1) Project to internal dimension
+        x = self.input_proj(x)  # (B,S,D)
+
+        # 2) Pass through stacked cosSquareFormer layers
+        x = self.encoder(x, mask=mask)  # (B,S,D)
+
+        # 3) Final projection
+        out = self.out_proj(x)  # (B,S,1)
+        return out, None
         x = torch.cat((x,x_l),axis=2)
 
         x = self.fc(x)
