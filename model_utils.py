@@ -639,26 +639,26 @@ class CosSquareAttention(nn.Module):
         """
         B, S, D = x.shape
 
-        # 1) Compute Q,K,V
+        # Compute Q,K,V
         q = self.wq(x)  # (B,S,D*H)
         k = self.wk(x)  
         v = self.wv(x)
 
-        # 2) Reshape
+        # Reshape
         q = self.split_heads(q)  # (B,H,S,D)
         k = self.split_heads(k)  
         v = self.split_heads(v)
 
-        # 3) Scale by sqrt(d_head)
+        # Scale by sqrt(d_head)
         d_head = float(self.D)
         q = q * (d_head ** -0.5)
         k = k * (d_head ** -0.5)
 
-        # 4) Activation (ELU+1)
+        # Activation (ELU+1)
         q = F.elu(q) + 1
         k = F.elu(k) + 1
 
-        # 5) Build cos^2, sin^2 weighting across the sequence dimension S
+        # Build cos^2, sin^2 weighting across the sequence dimension S
         device = x.device
         cos_vals = torch.cos(math.pi * torch.arange(S, device=device)/S) ** 2
         sin_vals = torch.sin(math.pi * torch.arange(S, device=device)/S) ** 2
@@ -672,7 +672,7 @@ class CosSquareAttention(nn.Module):
         k_cos = torch.einsum('bhjd,bs->bhjd', k, cos_vals)
         k_sin = torch.einsum('bhjd,bs->bhjd', k, sin_vals)
 
-        # 6) Convert to attention scores
+        # Convert to attention scores
         # We'll do a standard batch matmul approach: shape (B,H,S,S)
 
         # Expand Q, K to 5D so we can sum over D:
@@ -691,20 +691,20 @@ class CosSquareAttention(nn.Module):
         # attention_scores => (B,H,S,S)
         attention_scores = attn1 + attn2 + attn3
 
-        # 7) Optional causal masking
+        # Optional causal masking
         if causal_mask is not None:
             attention_scores = attention_scores.masked_fill(causal_mask.bool(), float('-inf'))
 
-        # 8) Softmax
+        #Softmax
         attn_weights = F.softmax(attention_scores, dim=-1)  # (B,H,S,S)
 
-        # 9) Weighted sum over V => (B,H,S,D)
+        # Weighted sum over V => (B,H,S,D)
         out = torch.einsum('bhss,bhsd->bhsd', attn_weights, v)
 
-        # 10) Combine heads => (B,S,D)
+        # Combine heads => (B,S,D)
         out = self.concat_heads(out)
 
-        # 11) Final linear
+        # Final linear
         out = self.dense(out)  # (B,S,D)
 
         return out
@@ -738,13 +738,13 @@ class CosSquareFormerEncoderLayer(nn.Module):
     def forward(self, x, mask=None):
         # x shape: (B,S,D)
         
-        # 1) Pre-norm approach: LN -> attn -> residual
+        # Pre-norm approach: LN -> attn -> residual
         x_ln = self.norm1(x)
         attn_out = self.attn(x_ln, mask)  # (B,S,D)
         attn_out = self.dropout_attn(attn_out)
         x = x + attn_out
 
-        # 2) LN -> MLP -> residual
+        # LN -> MLP -> residual
         x_ln = self.norm2(x)
         mlp_out = self.mlp(x_ln)  # (B,S,D)
         x = x + mlp_out
@@ -811,13 +811,13 @@ class CosSquareFormerModel(nn.Module):
         x: (B,S,input_dim)
         returns: (B,S,1)
         """
-        # 1) Project to internal dimension
+        # Project to internal dimension
         x = self.input_proj(x)  # (B,S,D)
 
-        # 2) Pass through stacked cosSquareFormer layers
+        # Pass through stacked cosSquareFormer layers
         x = self.encoder(x, mask=mask)  # (B,S,D)
 
-        # 3) Final projection
+        # Final projection
         out = self.out_proj(x)  # (B,S,1)
         return out, None
         x = torch.cat((x,x_l),axis=2)
