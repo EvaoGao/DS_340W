@@ -12,7 +12,7 @@ from sklearn.metrics import root_mean_squared_error,mean_squared_error, mean_abs
 
 from train import get_train_test_data
 
-df = pd.read_csv("city_pollution_data.csv")
+df = pd.read_csv("city_pollution_data2.csv")
 train_set_dict, test_set_dict = get_train_test_data(df)
 
 train_frames = []
@@ -35,7 +35,7 @@ pollutants = [
 ]
 
 #choose forecasting length
-forecast_horizon = 1  # ex: 1 = next-day forecast
+forecast_horizon = 7  # ex: 1 = next-day forecast
 
 def create_shifted_targets_naive(df, pollutants, horizon=1):
     # Sort by city and date so shift is correct
@@ -55,16 +55,17 @@ def create_shifted_targets_imputations(df, pollutants, horizon=1):
         df[p + "_target"] = df.groupby("City")[p].shift(-horizon)
     
     target_cols = [p + "_target" for p in pollutants]
-    # Replace missing values with the median of each column
-    df = data_imputations(df, target_cols)
+    
+    # Replace missing values with the median of each column per city
+    df[target_cols] = df.groupby("City")[target_cols].transform(lambda x: x.fillna(x.mean()))
     
     return df
 
 def data_imputations(df, columns):
-    df[columns] = df[columns].fillna(df[columns].median())
+    df[columns] = df[columns].fillna(df[columns].mean())
     return df
 
-def data_filters(df,columns):
+def data_filters(df,columns): #Deleting rows with missing values
     df = df.dropna(subset=columns)
     return df
 
@@ -89,7 +90,7 @@ feature_cols = [
     "temperature_median",
     "dew_median",
     "wind-speed_median",
-    "mil_miles",
+    "mil_miles", #Traffic,
     "wind-gust_median",
     "pressure_median"
 ]
