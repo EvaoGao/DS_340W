@@ -125,6 +125,7 @@ col_mean = {}
 col_mean2 = {}
 col_std = {}
 
+# data imputations
 for city in cities_list:
   col_mean[city] = {}
   for col in train_set[city]:
@@ -411,5 +412,4 @@ if __name__ == '__main__':
           
           RMSE_list.append(np.sqrt(eval_mse))
           MAPE_list.append(eval_mape*100)
-      
 
