@@ -137,11 +137,11 @@ for city in cities_list:
 
     if col in ["pm25_median", "o3_median", "so2_median", "no2_median", "pm10_median", "co_median"]:
       _mean = np.nanmean(train_set[city][col])
-      if np.isnan(_mean) == True:
+      if np.isnan(_mean):
         _mean = 0
-      
       col_mean[city][col] = _mean
       train_set[city][col] = train_set[city][col].fillna(_mean)
+      test_set[city][col] = test_set[city][col].fillna(_mean)
 
     if normalization_type == 'mean_std':
       col_mean2[col] = np.nanmean(concat_df[col].astype("float"))
@@ -171,56 +171,65 @@ class CityDataP(torch.utils.data.Dataset):
     self.selected_column = selected_column
 
   def __getitem__(self, idx):
+    input_seq_len = 14   # use 14 days of data as input
+    target_seq_len = 7   # predict the following 7 days
+
     if self.split != "train":
-      # getting all data out of the validation set
-      out, city = self.get_idx_data(idx)
-    
+        # getting all data from the validation set
+        window, city = self.get_idx_data(idx)
     else:
-      # getting data randomly for train split
-      city = random.choice(cities_list)
-      _df = self.dataset[city]
-      start_idx = random.randint(1,_df.shape[0]-SEQ_LENGTH)
-      out =  _df.iloc[start_idx-1:start_idx+SEQ_LENGTH]
+        # getting data randomly for train split
+        city = random.choice(cities_list)
+        _df = self.dataset[city]
+        start_idx = random.randint(0, _df.shape[0] - input_seq_len - target_seq_len)
+        window = _df.iloc[start_idx : start_idx + input_seq_len + target_seq_len]
 
-    out = out.drop(['index', 'Date', 'City'], axis=1)
+    window = window.drop(['index', 'Date', 'City'], axis=1)
 
-    Y = pd.DataFrame({})
-    Y_true = pd.DataFrame({})
+    Y_all = pd.DataFrame({})
+    Y_all[self.selected_column] = window[self.selected_column]
 
-    for col in out.columns:
+    features = window.copy()
+    for col in features.columns.tolist():
       if col == self.selected_column:
-        Y_true[col] = out[col]
-        Y[col] = out[col].fillna(col_mean[city][col])
-      
-      if col in ["pm25_median", "pm10_median", "o3_median", "so2_median", "no2_median", "co_median"]:
-        out.drop([col], axis=1, inplace=True)
+        continue
+      elif col in ["pm25_median", "pm10_median", "o3_median", "so2_median", "no2_median", "co_median"]:
+        features.drop(col, axis=1, inplace=True)
       else:
-        out[col] = out[col].astype("float")
+        features[col] = features[col].astype("float")
 
-    out = np.concatenate((np.array(out)[1:,:], np.array(Y)[:-1,:]), axis=1)
-    Y = np.array(Y)[1:]
-    Y_true = np.array(Y_true)[1:]
-    
-    return out, Y, Y_true
+    X_input = features.iloc[:input_seq_len, :]
+    Y_target = Y_all.iloc[input_seq_len:input_seq_len+target_seq_len, :]
+
+    return X_input.values, Y_target.values, Y_all.values
 
   def get_idx_data(self, idx):
     city = cities_list[self.valid_city_idx]
     _df = self.dataset[city]
-
-    out =  _df.iloc[self.valid_day_idx:self.valid_day_idx+SEQ_LENGTH]
+    total_seq = 14 + 7  # 21 days
+    out = _df.iloc[self.valid_day_idx : self.valid_day_idx + total_seq]
     
-    if self.valid_day_idx+SEQ_LENGTH >= _df.shape[0]:
-      self.valid_day_idx = 0
-      self.valid_city_idx += 1
+    if self.valid_day_idx + total_seq >= _df.shape[0]:
+        self.valid_day_idx = 0
+        self.valid_city_idx += 1
+        # Wrap around if index becomes out-of-range.
+        if self.valid_city_idx >= len(cities_list):
+            self.valid_city_idx = 0
     else:
-      self.valid_day_idx += 1
+        self.valid_day_idx += 1
 
     return out, city
 
   def __len__(self):
+    input_seq_len = 14
+    target_seq_len = 7
+    total_seq = input_seq_len + target_seq_len  # 21 days
     if self.split != "train":
-      return (61-SEQ_LENGTH)*len(cities_list)
-    return len(all_train) - (SEQ_LENGTH - 1)*len(cities_list)
+        # For example, if test data always has 61 rows per city.
+        return (61 - total_seq + 1) * len(cities_list)
+    else:
+        # For training, you might sum over all cities. One option is:
+        return sum([self.dataset[city].shape[0] - total_seq + 1 for city in cities_list])
 
 class CityDataForecast(torch.utils.data.Dataset):
   def __init__(self, selected_column, split):
@@ -235,51 +244,49 @@ class CityDataForecast(torch.utils.data.Dataset):
     self.selected_column = selected_column
 
   def __getitem__(self, idx):
+    input_seq_len = 14   # use 14 days of data as input
+    target_seq_len = 7   # predict the following 7 days
+
     if self.split != "train":
-      # getting all data out of the validation set
-      out, city = self.get_idx_data(idx)
-    
+        # getting all data from the validation set
+        window, city = self.get_idx_data(idx)
     else:
-      # getting data randomly for train split
-      city = random.choice(cities_list)
-      _df = self.dataset[city]
-      start_idx = random.randint(1,_df.shape[0]-SEQ_LENGTH)
-      out =  _df.iloc[start_idx-1:start_idx+SEQ_LENGTH]
+        # getting data randomly for train split
+        city = random.choice(cities_list)
+        _df = self.dataset[city]
+        start_idx = random.randint(0, _df.shape[0] - input_seq_len - target_seq_len)
+        window = _df.iloc[start_idx : start_idx + input_seq_len + target_seq_len]
 
-    out = out.drop(['index', 'Date', 'City'], axis=1)
+    window = window.drop(['index', 'Date', 'City'], axis=1)
 
-    Y = pd.DataFrame({})
-    Y_true = pd.DataFrame({})
+    Y_all = pd.DataFrame({})
+    Y_all[self.selected_column] = window[self.selected_column]
 
-    for col in out.columns:
+    features = window.copy()
+    for col in features.columns.tolist():
       if col == self.selected_column:
-        Y_true[col] = out[col]
-        #print(out[col])
-        Y[col] = out[col].fillna(col_mean[city][col])
-      
-      if col in ["pm25_median", "pm10_median", "o3_median", "so2_median", "no2_median", "co_median"]:
-        out.drop([col], axis=1, inplace=True)
+        continue
+      elif col in ["pm25_median", "pm10_median", "o3_median", "so2_median", "no2_median", "co_median"]:
+        features.drop(col, axis=1, inplace=True)
       else:
-        out[col] = out[col].astype("float")
+        features[col] = features[col].astype("float")
 
-    out = np.concatenate((np.array(out)[1:,:], np.array(Y)[:-1,:]), axis=1)
-    Y = np.array(Y)[1:]
+    X_input = features.iloc[:input_seq_len, :]
+    Y_target = Y_all.iloc[input_seq_len:input_seq_len+target_seq_len, :]
 
-    Y_true = np.array(Y_true)[1:]
-
-    return out, Y, Y_true
+    return X_input.values, Y_target.values, Y_all.values
 
   def get_idx_data(self, idx):
     city = cities_list[self.valid_city_idx]
     _df = self.dataset[city]
-
-    out =  _df.iloc[self.valid_day_idx:self.valid_day_idx+SEQ_LENGTH]
+    total_seq = 14 + 7  # input days + target days
+    out = _df.iloc[self.valid_day_idx : self.valid_day_idx + total_seq]
     
-    if self.valid_day_idx+SEQ_LENGTH >= _df.shape[0]:
-      self.valid_day_idx = 0
-      self.valid_city_idx += 1
+    if self.valid_day_idx + total_seq >= _df.shape[0]:
+        self.valid_day_idx = 0
+        self.valid_city_idx += 1
     else:
-      self.valid_day_idx += 1
+        self.valid_day_idx += 1
 
     return out, city
 
@@ -408,8 +415,7 @@ if __name__ == '__main__':
             best_model = deepcopy(model)
             best_mse = eval_mse
             best_epoch = epoch
-            torch.save(best_model.state_dict(), f"cosSquareFormer{best_epoch}.pth")
+            torch.save(best_model.state_dict(), f"cosSquareFormerNew{best_epoch}.pth")
           
           RMSE_list.append(np.sqrt(eval_mse))
           MAPE_list.append(eval_mape*100)
-
