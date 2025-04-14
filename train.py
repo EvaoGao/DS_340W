@@ -306,16 +306,16 @@ if __name__ == '__main__':
   dtw_loss = SoftDTW(use_cuda=False, gamma=0.1)
   lmbda = 0.5
 
-  for SELECTED_COLUMN in ["pm25_median"]: # ["pm25_median", "so2_median", "pm10_median", "no2_median", "o3_median", "co_median", "so2_median"]:
-      
+  #for SELECTED_COLUMN in ["pm10_median", "o3_median", "so2_median", "no2_median", "co_median"]: # ["pm25_median", "so2_median", "pm10_median", "no2_median", "o3_median", "co_median", "so2_median"]:
+  for SELECTED_COLUMN in ["pm25_median"]:   
       train_data = CityDataP(SELECTED_COLUMN, "train")
       val_data = CityDataP(SELECTED_COLUMN, "test")
 
       sampleLoader = DataLoader(train_data, 32, shuffle=True, num_workers=4)
       val_loader = DataLoader(val_data, 4096, shuffle=False, num_workers=4)
 
-      lr = 0.00001
-      n_epochs = 100
+      lr = 0.00005
+      n_epochs = 5
       RMSE_list = []
       MAPE_list = []
 
@@ -327,7 +327,8 @@ if __name__ == '__main__':
       #model = MultiHeadAttentionCosSquareformerNew(D=16, H=10).to(device)
       #model = MultiHeadAttentionCosSquareformerWithProj(D=11, H=10).to(device)
       #model = MultiHeadAttentionCosSquareformer(D=11, H=10).to(device)
-      model = CosSquareFormerModel(input_dim=11,D=32,H=4,N_layers=4,ff_dim=128,dropout=0.3,max_seq_len=64)
+      #model = CosSquareFormerModel(input_dim=11,D=32,H=4,N_layers=4,ff_dim=128,dropout=0.3,max_seq_len=64)
+      model = CosSquareFormerForecastModel(input_dim=11,D=32,H=4,N_layers=4,ff_dim=128,dropout=0.3,max_seq_len=64).to(device)
       #opt = torch.optim.Adam(model.parameters(), lr=lr)
       opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
       #device = torch.device("cpu")
@@ -375,36 +376,37 @@ if __name__ == '__main__':
           total_pe = 0.0
           total_valid = 0.0
 
-          for x_val, _, y_val in val_loader:
+          for x_val, y_val, _ in val_loader:
               x_val, y_val = [t.to(device).float() for t in (x_val, y_val)]
               mask = create_look_ahead_mask(x_val.shape[1])
               out, _ = model(x_val, mask)
-              #out = out[:,:,-1:]
-              print(out.shape, y_val.shape)
+              #print(out.shape, y_val.shape)
+              ytrue = y_val.squeeze(-1).cpu().numpy()
+              ypred = out.squeeze(-1).cpu().detach().numpy()
+              ytrue = ytrue.ravel()
+              ypred = ypred.ravel()
 
-              ytrue = y_val[:,-1,:].squeeze().cpu().numpy()
-              ypred = out[:,-1,:].squeeze().cpu().detach().numpy()
-              
               true_valid = np.isnan(ytrue) != 1
-              ytrue = ytrue[true_valid] #np.nan_to_num(ytrue, 0)
+              ytrue = ytrue[true_valid]
               ypred = ypred[true_valid]
 
               if normalization_type == 'mean_std':
-                ytrue = (ytrue * col_std[SELECTED_COLUMN]) + col_mean2[SELECTED_COLUMN]
-                ypred = (ypred * col_std[SELECTED_COLUMN]) + col_mean2[SELECTED_COLUMN]
-              
+                  ytrue = (ytrue * col_std[SELECTED_COLUMN]) + col_mean2[SELECTED_COLUMN]
+                  ypred = (ypred * col_std[SELECTED_COLUMN]) + col_mean2[SELECTED_COLUMN]
               else:
-                ytrue = (ytrue * col_max[SELECTED_COLUMN])
-                ypred = (ypred * col_max[SELECTED_COLUMN])
-
-              se = (ytrue - ypred)**2 # np.square(ytrue - ypred)
-              pe = np.abs((ytrue - ypred) / (ytrue + 0.0001))
+                  ytrue = (ytrue * col_max[SELECTED_COLUMN])
+                  ypred = (ypred * col_max[SELECTED_COLUMN])
+              
+              se = (ytrue - ypred)**2
+              pe = np.abs((ytrue - ypred) / (ytrue + 1e-4))
+              
               total_se += np.sum(se)
               total_pe += np.sum(pe)
-              total_valid += np.sum(true_valid)
+              total_valid += len(ytrue)
 
-          eval_mse = total_se / total_valid # np.mean(se) # 
-          eval_mape = total_pe / total_valid # np.mean(pe) # 
+          eval_mse = total_se / total_valid
+          eval_mape = total_pe / total_valid
+
           print('valid samples:', total_valid)
           print("Epoch: ", epoch)
           print('Eval MSE: ', eval_mse)
@@ -415,7 +417,14 @@ if __name__ == '__main__':
             best_model = deepcopy(model)
             best_mse = eval_mse
             best_epoch = epoch
-            torch.save(best_model.state_dict(), f"cosSquareFormerNew{best_epoch}.pth")
+            best_mape = eval_mape
+            #torch.save(best_model.state_dict(), f"CSF14-7{best_epoch}.pth")
           
           RMSE_list.append(np.sqrt(eval_mse))
           MAPE_list.append(eval_mape*100)
+
+      print("Pollutants: ", SELECTED_COLUMN)
+      print("Best epoch: ", best_epoch)
+      print("Best RMSE: ", np.sqrt(best_mse))
+      print("Best MAPE: ", best_mape*100)
+      torch.save(best_model.state_dict(), f"CSF14-7_{SELECTED_COLUMN}_{best_epoch}.pth")
