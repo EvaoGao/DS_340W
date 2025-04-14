@@ -1,7 +1,3 @@
-'''
-Code by Mehran Maghoumi
-link: https://github.com/Maghoumi/pytorch-softdtw-cuda/blob/master/soft_dtw_cuda.py
-'''
 
 import numpy as np
 import torch
@@ -314,6 +310,22 @@ class SoftDTW(torch.nn.Module):
             D_xy = self.dist_func(X, Y)
             return func_dtw(D_xy, self.gamma, self.bandwidth)
 # ----------------------------------------------------------------------------------------------------------------------
+class CombinedLoss(torch.nn.Module):
+    """
+    MSE + soft-DTW.
+    """
+    def __init__(self, mse_weight=1.0, sdtw_weight=0.5, gamma=1.0, normalize=False, bandwidth=None):
+        super(CombinedLoss, self).__init__()
+        self.mse_loss = torch.nn.MSELoss()
+        self.mse_weight = mse_weight
+        self.sdtw_weight = sdtw_weight
+        self.sdtw = SoftDTW(use_cuda=torch.cuda.is_available(), gamma=gamma, normalize=normalize, bandwidth=bandwidth)
+
+    def forward(self, pred, target):
+        mse = self.mse_loss(pred, target)
+        sdtw = self.sdtw(pred, target)
+        return self.mse_weight * mse + self.sdtw_weight * sdtw
+# ----------------------------------------------------------------------------------------------------------------------
 def timed_run(a, b, sdtw):
     """
     Runs a and b through sdtw, and times the forward and backward passes.
@@ -378,3 +390,41 @@ def profile(batch_size, seq_len_a, seq_len_b, dims, tol_backward):
     print("\tGPU:     ", avg_gpu)
     print("\tSpeedup: ", avg_cpu / avg_gpu)
     print()
+
+
+class SoftDTW2(torch.nn.Module):
+    """ Basic differentiable SoftDTW for 1D time-series. """
+    def __init__(self, gamma=1.0):
+        super().__init__()
+        self.gamma = gamma
+
+    def pairwise_dist(self, X, Y):
+        """
+        X, Y: shape (B, seq_len)
+        Return: shape (B, seq_len, seq_len)
+        """
+        B, L = X.shape
+        X_ = X.unsqueeze(2)  # (B, L, 1)
+        Y_ = Y.unsqueeze(1)  # (B, 1, L)
+        return (X_ - Y_)**2
+
+    def forward(self, X, Y):
+        # X, Y: (B, seq_len)
+        D = self.pairwise_dist(X, Y)  # (B, L, L)
+        B, L, _ = D.shape
+        R = torch.zeros_like(D)
+        R[:, 0, 0] = D[:, 0, 0]
+        for j in range(1, L):
+            R[:, 0, j] = R[:, 0, j-1] + D[:, 0, j]
+        for i in range(1, L):
+            R[:, i, 0] = R[:, i-1, 0] + D[:, i, 0]
+        for i in range(1, L):
+            for j in range(1, L):
+                r0 = R[:, i-1, j]
+                r1 = R[:, i, j-1]
+                r2 = R[:, i-1, j-1]
+                stacked = torch.stack([r0, r1, r2], dim=0)
+                # soft-min
+                softm = -self.gamma * torch.logsumexp(-stacked / self.gamma, dim=0)
+                R[:, i, j] = D[:, i, j] + softm
+        return R[:, -1, -1].mean()
