@@ -11,7 +11,7 @@ from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import TensorDataset, DataLoader
 from torch.optim.lr_scheduler import _LRScheduler
-
+from torch_geometric.nn import GCNConv
 from torch.autograd import Variable
 
 from datetime import datetime
@@ -639,26 +639,26 @@ class CosSquareAttention(nn.Module):
         """
         B, S, D = x.shape
 
-        # Compute Q,K,V
+        # 1) Compute Q,K,V
         q = self.wq(x)  # (B,S,D*H)
         k = self.wk(x)  
         v = self.wv(x)
 
-        # Reshape
+        # 2) Reshape
         q = self.split_heads(q)  # (B,H,S,D)
         k = self.split_heads(k)  
         v = self.split_heads(v)
 
-        # Scale by sqrt(d_head)
+        # 3) Scale by sqrt(d_head)
         d_head = float(self.D)
         q = q * (d_head ** -0.5)
         k = k * (d_head ** -0.5)
 
-        # Activation (ELU+1)
+        # 4) Activation (ELU+1)
         q = F.elu(q) + 1
         k = F.elu(k) + 1
 
-        # Build cos^2, sin^2 weighting across the sequence dimension S
+        # 5) Build cos^2, sin^2 weighting across the sequence dimension S
         device = x.device
         cos_vals = torch.cos(math.pi * torch.arange(S, device=device)/S) ** 2
         sin_vals = torch.sin(math.pi * torch.arange(S, device=device)/S) ** 2
@@ -672,7 +672,7 @@ class CosSquareAttention(nn.Module):
         k_cos = torch.einsum('bhjd,bs->bhjd', k, cos_vals)
         k_sin = torch.einsum('bhjd,bs->bhjd', k, sin_vals)
 
-        # Convert to attention scores
+        # 6) Convert to attention scores
         # We'll do a standard batch matmul approach: shape (B,H,S,S)
 
         # Expand Q, K to 5D so we can sum over D:
@@ -691,20 +691,20 @@ class CosSquareAttention(nn.Module):
         # attention_scores => (B,H,S,S)
         attention_scores = attn1 + attn2 + attn3
 
-        # Optional causal masking
+        # 7) Optional causal masking
         if causal_mask is not None:
             attention_scores = attention_scores.masked_fill(causal_mask.bool(), float('-inf'))
 
-        #Softmax
+        # 8) Softmax
         attn_weights = F.softmax(attention_scores, dim=-1)  # (B,H,S,S)
 
-        # Weighted sum over V => (B,H,S,D)
+        # 9) Weighted sum over V => (B,H,S,D)
         out = torch.einsum('bhss,bhsd->bhsd', attn_weights, v)
 
-        # Combine heads => (B,S,D)
+        # 10) Combine heads => (B,S,D)
         out = self.concat_heads(out)
 
-        # Final linear
+        # 11) Final linear
         out = self.dense(out)  # (B,S,D)
 
         return out
@@ -738,13 +738,13 @@ class CosSquareFormerEncoderLayer(nn.Module):
     def forward(self, x, mask=None):
         # x shape: (B,S,D)
         
-        # Pre-norm approach: LN -> attn -> residual
+        # 1) Pre-norm approach: LN -> attn -> residual
         x_ln = self.norm1(x)
         attn_out = self.attn(x_ln, mask)  # (B,S,D)
         attn_out = self.dropout_attn(attn_out)
         x = x + attn_out
 
-        # LN -> MLP -> residual
+        # 2) LN -> MLP -> residual
         x_ln = self.norm2(x)
         mlp_out = self.mlp(x_ln)  # (B,S,D)
         x = x + mlp_out
@@ -811,17 +811,68 @@ class CosSquareFormerModel(nn.Module):
         x: (B,S,input_dim)
         returns: (B,S,1)
         """
-        # Project to internal dimension
+        # 1) Project to internal dimension
         x = self.input_proj(x)  # (B,S,D)
 
-        # Pass through stacked cosSquareFormer layers
+        # 2) Pass through stacked cosSquareFormer layers
         x = self.encoder(x, mask=mask)  # (B,S,D)
 
-        # Final projection
+        # 3) Final projection
         out = self.out_proj(x)  # (B,S,1)
         return out, None
-        x = torch.cat((x,x_l),axis=2)
+    
 
-        x = self.fc(x)
-        
-        return x, attention_weights # (B,S,S)
+class CosSquareFormerForecastModel(nn.Module):
+    """
+    Modified CosSquareFormer model to output a 7-day forecast.
+    It first encodes the 14-day input, then uses the last hidden state
+    to predict the next 7 days.
+    """
+    def __init__(self, 
+                 input_dim,  # number of raw input features
+                 D,          # internal hidden dimension
+                 H,          # number of heads
+                 N_layers=4, 
+                 ff_dim=256, 
+                 dropout=0.1, 
+                 max_seq_len=512):
+        super().__init__()
+        self.input_proj = nn.Linear(input_dim, D)
+        self.encoder = CosSquareFormerEncoder(D, H, N_layers, ff_dim, dropout, max_seq_len)
+        # New projection layer for forecasting 7 days from the context vector.
+        self.future_proj = nn.Linear(D, 7)
+
+    def forward(self, x, mask=None):
+        """
+        x: (B, S, input_dim) with S=14 days input.
+        returns: (B, 7, 1) forecast for the next 7 days.
+        """
+        # 1) Project input.
+        x = self.input_proj(x)  # (B, S, D)
+        # 2) Encode the sequence.
+        x = self.encoder(x, mask=mask)  # (B, S, D)
+        # 3) Use the last time step as context.
+        context = x[:, -1, :]  # (B, D)
+        # 4) Forecast 7 days.
+        forecast = self.future_proj(context)  # (B, 7)
+        # Reshape to have a final singleton dimension.
+        forecast = forecast.unsqueeze(-1)  # (B, 7, 1)
+        return forecast, None
+
+
+class GCNForecast(nn.Module):
+    def __init__(self, in_channels, hidden_channels, out_channels):
+        super(GCNForecast, self).__init__()
+        # Two GCN layers and one linear layer
+        self.conv1 = GCNConv(in_channels, hidden_channels)
+        self.conv2 = GCNConv(hidden_channels, hidden_channels)
+        self.lin = nn.Linear(hidden_channels, out_channels)
+    def forward(self, x, edge_index):
+        # x: [num_nodes, in_channels], edge_index: [2, num_edges]
+        x = self.conv1(x, edge_index)
+        x = F.relu(x)
+        x = self.conv2(x, edge_index)
+        x = F.relu(x)
+        # Linear layer to map to FUTURE_DAYS outputs per node
+        x = self.lin(x)  # output shape: [num_nodes, out_channels]
+        return x
