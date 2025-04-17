@@ -44,7 +44,7 @@ LAYER_DIM = 3
 
 normalization_type = 'mean_std' # 'max', mean_std
 
-def get_train_test_data(df):
+def get_train_test_data(df,method = 'mean', TEST_SET_SIZE = 60):
   # we'll mostly need median and variance values of features for most of our needs
 
   for col in df.columns:
@@ -81,7 +81,6 @@ def get_train_test_data(df):
   test_indices_of_cities = {}
   train_set = {}
   test_set = {}
-  TEST_SET_SIZE = 60
 
   for city in cities_list:
     city_df[city] = df[df['City'] == city].sort_values('Date').reset_index()
@@ -89,10 +88,14 @@ def get_train_test_data(df):
       if col in ["pm25_median", "o3_median", "so2_median", "no2_median", "pm10_median", "co_median"]:
         continue
       try:  
-        _mean = np.nanmean(city_df[city][col])
+        if method == 'mean':
+          _mean = np.nanmean(city_df[city][col])
+        elif method == "median":
+          _mean = np.nanmedian(city_df[city][col])
         if np.isnan(_mean) == True:
           _mean = 0
         city_df[city][col] = city_df[city][col].fillna(_mean)
+           
       except:
         pass
     
@@ -124,6 +127,17 @@ col_max = {}
 col_mean = {}
 col_mean2 = {}
 col_std = {}
+'''
+pollutants = ["pm25_median","pm10_median", "o3_median", "so2_median", "no2_median", "co_median"]
+for city in cities_list:
+    print(f"Training set {city} shape: {train_set[city].shape}")
+    print(f"Testing set {city} shape: {test_set[city].shape}")
+    train_set[city].dropna(subset = pollutants, inplace=True)
+    test_set[city].dropna(subset = pollutants, inplace=True)
+    print(f"Training set {city} shape: {train_set[city].shape}")
+    print(f"Testing set {city} shape: {test_set[city].shape}\n")
+'''
+
 
 # data imputations
 for city in cities_list:
@@ -307,15 +321,15 @@ if __name__ == '__main__':
   lmbda = 0.5
 
   #for SELECTED_COLUMN in ["pm10_median", "o3_median", "so2_median", "no2_median", "co_median"]: # ["pm25_median", "so2_median", "pm10_median", "no2_median", "o3_median", "co_median", "so2_median"]:
-  for SELECTED_COLUMN in ["pm25_median"]:   
+  for SELECTED_COLUMN in ["so2_median", "no2_median", "co_median"]:   
       train_data = CityDataP(SELECTED_COLUMN, "train")
       val_data = CityDataP(SELECTED_COLUMN, "test")
 
       sampleLoader = DataLoader(train_data, 32, shuffle=True, num_workers=4)
       val_loader = DataLoader(val_data, 4096, shuffle=False, num_workers=4)
 
-      lr = 0.00005
-      n_epochs = 5
+      lr = 0.00001
+      n_epochs = 10
       RMSE_list = []
       MAPE_list = []
 
@@ -407,11 +421,11 @@ if __name__ == '__main__':
           eval_mse = total_se / total_valid
           eval_mape = total_pe / total_valid
 
-          print('valid samples:', total_valid)
-          print("Epoch: ", epoch)
-          print('Eval MSE: ', eval_mse)
-          print('Eval RMSE: {}: '.format(SELECTED_COLUMN), np.sqrt(eval_mse))
-          print('Eval MAPE: {}: '.format(SELECTED_COLUMN), eval_mape*100)
+          #print('valid samples:', total_valid)
+          #print("Epoch: ", epoch)
+          #print('Eval MSE: ', eval_mse)
+          #print('Eval RMSE: {}: '.format(SELECTED_COLUMN), np.sqrt(eval_mse))
+          #print('Eval MAPE: {}: '.format(SELECTED_COLUMN), eval_mape*100)
 
           if eval_mse < best_mse:
             best_model = deepcopy(model)
@@ -423,7 +437,7 @@ if __name__ == '__main__':
           RMSE_list.append(np.sqrt(eval_mse))
           MAPE_list.append(eval_mape*100)
 
-      print("Pollutants: ", SELECTED_COLUMN)
+      print("\nPollutants: ", SELECTED_COLUMN)
       print("Best epoch: ", best_epoch)
       print("Best RMSE: ", np.sqrt(best_mse))
       print("Best MAPE: ", best_mape*100)
