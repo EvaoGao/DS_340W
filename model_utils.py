@@ -861,18 +861,44 @@ class CosSquareFormerForecastModel(nn.Module):
 
 
 class GCNForecast(nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels):
+    def __init__(self, in_channels, hidden_channels=64, out_channels=7, dropout=0.3):
         super(GCNForecast, self).__init__()
         # Two GCN layers and one linear layer
         self.conv1 = GCNConv(in_channels, hidden_channels)
         self.conv2 = GCNConv(hidden_channels, hidden_channels)
-        self.lin = nn.Linear(hidden_channels, out_channels)
+        self.conv3 = GCNConv(hidden_channels, hidden_channels)
+        
+        self.norm1 = nn.LayerNorm(hidden_channels)
+        self.norm2 = nn.LayerNorm(hidden_channels)
+        self.norm3 = nn.LayerNorm(hidden_channels)
+
+        self.dropout = nn.Dropout(dropout)
+
+        # Final MLP head
+        self.lin = nn.Sequential(
+            nn.Linear(hidden_channels, hidden_channels),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_channels, out_channels)
+        )
+
     def forward(self, x, edge_index):
-        # x: [num_nodes, in_channels], edge_index: [2, num_edges]
+        # x: [num_nodes, in_channels]
         x = self.conv1(x, edge_index)
         x = F.relu(x)
+        x = self.norm1(x)
+        x = self.dropout(x)
+
         x = self.conv2(x, edge_index)
         x = F.relu(x)
-        # Linear layer to map to FUTURE_DAYS outputs per node
-        x = self.lin(x)  # output shape: [num_nodes, out_channels]
+        x = self.norm2(x)
+        x = self.dropout(x)
+
+        x = self.conv3(x, edge_index)
+        x = F.relu(x)
+        x = self.norm3(x)
+        x = self.dropout(x)
+
+        x = self.lin(x)  # Final output shape: [num_nodes, out_channels]
         return x
+
