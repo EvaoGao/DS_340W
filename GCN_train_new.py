@@ -12,11 +12,12 @@ from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GCNConv
 from sklearn.model_selection import KFold
 from train import get_train_test_data
-
+import copy
+print("NEWWWWWWWWWWWWWWWWWWWWWWWWWWWWW")
 
 
 df = pd.read_csv("city_pollution_data2.csv")
-train_set, test_set = get_train_test_data(df)
+train_set, test_set = get_train_test_data(df,method = "mean")
 
 cities_list = list(train_set.keys())
 
@@ -36,13 +37,27 @@ col_mean2 = {}
 col_std = {}
 normalization_type = 'mean_std'  # 'mean_std' or 'max'
 DROP_ONEHOT = True  # whether to drop one-hot columns
+pollutants = ["pm25_median","pm10_median", "o3_median", "so2_median", "no2_median", "co_median"]
 
-# data imputations
+####### Deleting incomplete rows, comment these out if using imputation
+'''
+for city in cities_list:
+    print(f"Training set {city} shape: {train_set[city].shape}")
+    print(f"Testing set {city} shape: {test_set[city].shape}\n")
+    train_set[city].dropna(subset = pollutants, inplace=True)
+    test_set[city].dropna(subset = pollutants, inplace=True)
+    print(f"Training set {city} shape: {train_set[city].shape}")
+    print(f"Testing set {city} shape: {test_set[city].shape}")
+'''
+
+
 for city in cities_list:
   col_mean[city] = {}
   #print(train_set[city].columns)
   train_set[city] = train_set[city].drop(['index', 'Date', 'City'], axis=1)
   test_set[city] = test_set[city].drop(['index', 'Date', 'City'], axis=1)
+
+
   for col in train_set[city]:
     #if col in ["index", "Date", "City"]:
       #continue
@@ -50,7 +65,9 @@ for city in cities_list:
     train_set[city][col] = train_set[city][col].astype("float")
     test_set[city][col] = test_set[city][col].astype("float")
 
+
     if col in ["pm25_median","pm10_median", "o3_median", "so2_median", "no2_median", "co_median"]:
+      ###################
       _mean = np.nanmean(train_set[city][col])
       if np.isnan(_mean):
         _mean = 0
@@ -73,6 +90,7 @@ for city in cities_list:
   if DROP_ONEHOT:
     train_set[city].drop(train_set[city].columns[-19:], axis=1, inplace=True)
     test_set[city].drop(test_set[city].columns[-19:], axis=1, inplace=True)
+
 
 
 # City Coordinates (54 Cities)
@@ -135,8 +153,8 @@ city_coords = {
 city_names = list(city_coords.keys())
 assert len(city_names) == 54, f"Expected 54 cities, got {len(city_names)}"
 
-# Build Graph Based on Haversine Distance < 800 km
-DISTANCE_THRESHOLD = 800.0
+# Build Graph Based on Haversine Distance < 400 km
+DISTANCE_THRESHOLD = 400
 
 def haversine_distance(lat1, lon1, lat2, lon2):
     R = 6378.0
@@ -167,10 +185,21 @@ edge_index = torch.tensor(edge_index_list, dtype=torch.long)
 print(f"Graph built: {num_nodes} nodes, {edge_index.size(1)//2} undirected edges.")
 
 
-# (C) Prepare Data from train_set & test_set
+# Prepare Data from train_set & test_set
 PAST_DAYS = 14
 FUTURE_DAYS = 7
 
+
+###################################
+'''
+for city in cities_list:
+   if len(train_set[city]) < PAST_DAYS + FUTURE_DAYS:
+      del train_set[city]
+
+for city in cities_list:
+   if len(test_set[city]) < PAST_DAYS + FUTURE_DAYS:
+      del test_set[city]
+'''
 
 # Check minimum length
 min_train_days = min(len(df) for df in train_set.values())
@@ -236,7 +265,7 @@ for SELECTED_COLUMN in ["pm25_median", "pm10_median", "o3_median", "so2_median",
     lambda_sdtw = 0.5
     softdtw     = SoftDTW2(gamma=gamma_sdtw)
 
-    h_channels_list = [16, 32, 64]
+    h_channels_list = [32, 64,128]
     lr_list         = [0.001, 0.005, 0.0001]
 
     all_indices = np.arange(len(train_data_list))
@@ -289,7 +318,7 @@ for SELECTED_COLUMN in ["pm25_median", "pm10_median", "o3_median", "so2_median",
                 val_preds = val_preds * col_std[SELECTED_COLUMN] + col_mean2[SELECTED_COLUMN]
 
                 rmse = np.sqrt(np.mean((val_preds - val_truth)**2))
-                mape = np.mean(np.abs((val_preds - val_truth) / (val_truth + 1e-6))) * 100
+                mape = np.mean(np.abs((val_preds - val_truth) / (val_truth + 1e-4))) * 100
 
                 fold_rmses.append(rmse)
                 fold_mapes.append(mape)
@@ -354,9 +383,10 @@ for SELECTED_COLUMN in ["pm25_median", "pm10_median", "o3_median", "so2_median",
             best_RMSE = test_rmse
             best_MAPE = test_mape
             best_epoch = epoch
-            optimal_model = final_model.state_dict()
+            #optimal_model = final_model.state_dict()
+            optimal_model = copy.deepcopy(final_model.state_dict())
             #torch.save(final_model.state_dict(), f"GCN{epoch}.pth")
         #print(f"\nRMSE,MAPE on Epoch {epoch}: {test_rmse:.4f}, {test_mape:.2f}%")  
 
-    torch.save(optimal_model, f"GCN_{SELECTED_COLUMN}_{best_epoch}.pth")
+    torch.save(optimal_model, f"GCN_{SELECTED_COLUMN}.pth")
     print(f"\nFinal Test RMSE:{best_RMSE:.4f}, MAPE:{best_MAPE:.2f}%, EPOCH:{best_epoch}")
