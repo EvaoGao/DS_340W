@@ -10,11 +10,14 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error, r2_score
 
 from train import get_train_test_data
+from joblib import dump
+from joblib import load
 
-
+print("NEWWWWWWWWWWWWWWWWWWWWWWWWW")
 def root_mean_squared_error(y_true, y_pred):
     return np.sqrt(mean_squared_error(y_true, y_pred))
 
+# Load Data
 df = pd.read_csv("city_pollution_data2.csv")
 train_set_dict, test_set_dict = get_train_test_data(df)
 
@@ -25,9 +28,12 @@ for city in train_set_dict.keys():
     test_frames.append(test_set_dict[city])
 
 df_train_all = pd.concat(train_frames, axis=0).reset_index(drop=True)
-df_test_all = pd.concat(test_frames, axis=0).reset_index(drop=True)
+df_test_all  = pd.concat(test_frames, axis=0).reset_index(drop=True)
 
+print(f"First 5 rows:")
+print(df_train_all["Population Staying at Home"].head())
 
+# Pollutants & parameters
 pollutants = [
     "pm25_median", 
     "pm10_median", 
@@ -37,168 +43,135 @@ pollutants = [
     "co_median"
 ]
 
+HORIZON   = 7    # Next 7 days
+LAG_DAYS  = 14   # Past 14 days input
 
-forecast_horizon = 7  # e.g., next 7 days
-
-
-def data_filters(df, columns):
-    """Drop rows with missing values in any of these columns."""
-    df = df.dropna(subset=columns)
-    return df
-
-def create_shifted_targets_naive(df, pollutants, horizon=1):
-    """Shift pollutants by `horizon` days to create naive next-day (or next-week) targets."""
+# Create 14-lag + 7-future-day columns
+def create_14lag_7future(df, pollutant):
     df = df.sort_values(["City", "Date"]).copy()
-    for p in pollutants:
-        df[p + "_target"] = df.groupby("City")[p].shift(-horizon)
-    df = data_filters(df, [p + "_target" for p in pollutants])
-    return df
-
-def create_shifted_targets_imputations(df, pollutants, horizon=1):
-    """Shift pollutants by `horizon` and impute missing values by city-wise mean."""
-    df = df.sort_values(["City", "Date"]).copy()
-    for p in pollutants:
-        df[p + "_target"] = df.groupby("City")[p].shift(-horizon)
-    target_cols = [p + "_target" for p in pollutants]
-    # Impute by city-wise mean
-    df[target_cols] = df.groupby("City")[target_cols].transform(lambda x: x.fillna(x.median()))
-    return df
-
-def data_imputations(df, columns):
-    """Simple mean imputation."""
-    df[columns] = df[columns].fillna(df[columns].median())
+    # 14-lag features
+    for i in range(1, LAG_DAYS + 1):
+        df[f"{pollutant}_lag_{i}"] = df.groupby("City")[pollutant].shift(i)
+    # 7 future days as targets
+    for d in range(1, HORIZON + 1):
+        df[f"{pollutant}_target_{d}"] = df.groupby("City")[pollutant].shift(-d)
     return df
 
 
-print("Without Imputations:")
-print(f"Training size:{df_train_all.shape[0]}, Testing size:{df_test_all.shape[0]}\n")
-df_train_all_naive = create_shifted_targets_naive(df_train_all, pollutants, forecast_horizon)
-df_test_all_naive  = create_shifted_targets_naive(df_test_all, pollutants, forecast_horizon)
-print(f"Training size:{df_train_all_naive.shape[0]}, Testing size:{df_test_all_naive.shape[0]}\n")
-
-print("With Imputations:")
-print(f"Training size:{df_train_all.shape[0]}, Testing size:{df_test_all.shape[0]}\n")
-df_train_all_imp = create_shifted_targets_imputations(df_train_all, pollutants, forecast_horizon)
-df_test_all_imp  = create_shifted_targets_imputations(df_test_all, pollutants, forecast_horizon)
-print(f"Training size:{df_train_all_imp.shape[0]}, Testing size:{df_test_all_imp.shape[0]}\n")
-
-# features
 exogenous_cols = [
-    "Population Staying at Home", 
+    "Population Staying at Home",
     "Population Not Staying at Home",
     "humidity_median",
     "temperature_median",
     "dew_median",
     "wind-speed_median",
-    "mil_miles", #Traffic
+    "mil_miles",
     "wind-gust_median",
     "pressure_median",
     "pp_feat"
 ]
 
 
-target_cols = [p + "_target" for p in pollutants]
+# Missing Data Approaches
+def drop_incomplete_rows(df, needed_cols):
+    return df.dropna(subset=needed_cols+pollutants)
+'''
+def impute_mean(df, needed_cols):
+    for c in needed_cols:
+        #print(f"First 5 rows of column {c}:")
+        #print(df[c].head())
+        df[c] = df[c].fillna(df[c].mean())
+    return df
 
-df_train_all_naive = data_filters(df_train_all_naive, exogenous_cols + target_cols)
-df_test_all_naive  = data_filters(df_test_all_naive, exogenous_cols + target_cols)
+def impute_median(df, needed_cols):
+    for c in needed_cols:
+        df[c] = df[c].fillna(df[c].median())
+    return df
+'''
+def impute_mean(df, needed_cols):
+    for c in needed_cols:
+        df[c] = pd.to_numeric(df[c], errors='coerce')
+        mean = np.nanmean(df[c])
+        df[c] = df[c].fillna(mean)
+    return df
 
-X_train_naive = df_train_all_naive[exogenous_cols]
-Y_train_naive = df_train_all_naive[target_cols]
+def impute_median(df, needed_cols):
+    for c in needed_cols:
+        df[c] = pd.to_numeric(df[c], errors='coerce')
+        mean = np.nanmedian(df[c])
+        df[c] = df[c].fillna(mean)
+    return df
 
-X_test_naive = df_test_all_naive[exogenous_cols]
-Y_test_naive = df_test_all_naive[target_cols]
+# Train function with single average RMSE output
+def train_for_pollutant(p, df_train, df_test, approach_label, fill_func):
+    print(f"\n=== Pollutant: {p}, Approach: {approach_label} ===")
+    
+    # Build 14-lag & 7-target columns
+    df_train_p = create_14lag_7future(df_train, p)
+    df_test_p  = create_14lag_7future(df_test, p)
 
-print("Shapes naive approach:")
-print("  X_train:", X_train_naive.shape)
-print("  Y_train:", Y_train_naive.shape)
-print("  X_test :", X_test_naive.shape)
-print("  Y_test :", Y_test_naive.shape)
+    lag_cols    = [f"{p}_lag_{i}" for i in range(1, LAG_DAYS+1)]
+    target_cols = [f"{p}_target_{d}" for d in range(1, HORIZON+1)]
+    needed_cols = exogenous_cols + lag_cols + target_cols
 
+    # Apply missing-data strategy
+    df_train_p = fill_func(df_train_p, needed_cols)
+    df_train_p = df_train_p.dropna(subset=needed_cols)
 
-# Train SVR
-svr_rbf = SVR(kernel='rbf', C=1.0, epsilon=0.1, gamma='scale')
-model_naive = MultiOutputRegressor(svr_rbf)
+    df_test_p = fill_func(df_test_p, needed_cols)
+    df_test_p = df_test_p.dropna(subset=needed_cols)
 
-# Create separate scalers for X and Y
-scaler_X_naive = StandardScaler()
-scaler_Y_naive = StandardScaler()
+    # X, Y for train & test
+    X_train = df_train_p[exogenous_cols + lag_cols]
+    Y_train = df_train_p[target_cols]
 
-# Fit on training data
-X_train_naive_scaled = scaler_X_naive.fit_transform(X_train_naive)
-Y_train_naive_scaled = scaler_Y_naive.fit_transform(Y_train_naive)
+    X_test  = df_test_p[exogenous_cols + lag_cols]
+    Y_test  = df_test_p[target_cols]
 
-# Train model on scaled data
-model_naive.fit(X_train_naive_scaled, Y_train_naive_scaled)
+    print("Train shape:", X_train.shape, Y_train.shape, 
+          "Test shape:", X_test.shape,  Y_test.shape)
 
-# Predict on test set
-X_test_naive_scaled = scaler_X_naive.transform(X_test_naive)
-Y_pred_naive_scaled = model_naive.predict(X_test_naive_scaled)
+    # Scale X
+    scaler_X = StandardScaler()
+    X_train_scaled = scaler_X.fit_transform(X_train)
+    X_test_scaled  = scaler_X.transform(X_test)
 
-# Denormalize (inverse-transform) predictions back to original scale
-Y_pred_naive = scaler_Y_naive.inverse_transform(Y_pred_naive_scaled)
+    # Scale Y
+    scaler_Y = StandardScaler()
+    Y_train_scaled = scaler_Y.fit_transform(Y_train)
 
-# Convert to DataFrame for convenience
-Y_pred_naive_df = pd.DataFrame(
-    data=Y_pred_naive, 
-    columns=target_cols, 
-    index=X_test_naive.index
-)
+    # MultiOutput SVR: 7-day forecast
+    svr = SVR(kernel='rbf', C=1.0, epsilon=0.1, gamma='scale')
+    model = MultiOutputRegressor(svr)
 
+    #Fit & predict
+    model.fit(X_train_scaled, Y_train_scaled)
+    Y_pred_scaled = model.predict(X_test_scaled)
+    Y_pred = scaler_Y.inverse_transform(Y_pred_scaled)
 
-print("\nResults WITHOUT imputations (denormalized):")
-for i, p in enumerate(pollutants):
-    # The corresponding target column name
-    col_name = p + "_target"
-    true_vals = Y_test_naive[col_name].values
-    pred_vals = Y_pred_naive_df[col_name].values
+    # Single average RMSE across 7 days
+    rmse_list = []
+    for day_idx in range(HORIZON):
+        true_day = Y_test.iloc[:, day_idx].values  # e.g. p_target_1
+        pred_day = Y_pred[:, day_idx]
+        day_rmse = root_mean_squared_error(true_day, pred_day)
+        rmse_list.append(day_rmse)
 
-    rmse = root_mean_squared_error(true_vals, pred_vals)
-    mape = mean_absolute_percentage_error(true_vals, pred_vals)
-    r2   = r2_score(true_vals, pred_vals)
+    avg_rmse = np.mean(rmse_list)
+    #dump(model, f"SVR_{p}.joblib")
+    print(f"Average 7-day RMSE = {avg_rmse:.3f}")
 
-    print(f"Pollutant: {p}")
-    print(f"  RMSE = {rmse:.3f}")
-    print(f"  MAPE = {mape:.3f}")
-    print(f"  R²   = {r2:.3f}\n")
-
-# Repeat the same procedure for the data-with-imputations
-df_train_all_imp = data_imputations(df_train_all_imp, exogenous_cols + target_cols)
-df_test_all_imp  = data_imputations(df_test_all_imp, exogenous_cols + target_cols)
-
-X_train_imp = df_train_all_imp[exogenous_cols]
-Y_train_imp = df_train_all_imp[target_cols]
-
-X_test_imp = df_test_all_imp[exogenous_cols]
-Y_test_imp = df_test_all_imp[target_cols]
-
-# Create new scalers
-scaler_X_imp = StandardScaler()
-scaler_Y_imp = StandardScaler()
-
-X_train_imp_scaled = scaler_X_imp.fit_transform(X_train_imp)
-Y_train_imp_scaled = scaler_Y_imp.fit_transform(Y_train_imp)
-
-model_imp = MultiOutputRegressor(svr_rbf)
-model_imp.fit(X_train_imp_scaled, Y_train_imp_scaled)
-
-X_test_imp_scaled = scaler_X_imp.transform(X_test_imp)
-Y_pred_imp_scaled = model_imp.predict(X_test_imp_scaled)
-
-# Inverse-transform predictions
-Y_pred_imp = scaler_Y_imp.inverse_transform(Y_pred_imp_scaled)
-Y_pred_imp_df = pd.DataFrame(Y_pred_imp, columns=target_cols, index=X_test_imp.index)
-
-print("\nResults WITH imputations (denormalized):")
-for i, p in enumerate(pollutants):
-    col_name = p + "_target"
-    true_vals = Y_test_imp[col_name].values
-    pred_vals = Y_pred_imp_df[col_name].values
-
-    rmse = root_mean_squared_error(true_vals, pred_vals)
-    mape = mean_absolute_percentage_error(true_vals, pred_vals)
-    r2   = r2_score(true_vals, pred_vals)
-
-    print(f"Pollutant: {p}")
-    print(f"  RMSE = {rmse:.3f}")
-    print(f"  MAPE = {mape:.3f}")
-    print(f"  R²   = {r2:.3f}\n")
+# Main: loop over 3 strategies × 6 pollutants
+Methods = [
+    ("Deleting Rows",   drop_incomplete_rows),
+    ("Mean Imputation", impute_mean),
+    ("Median Imputation", impute_median)
+]
+Methods2 = [
+    ("Mean Imputation", impute_mean)
+]
+for approach_label, fill_func in Methods2:
+    print(f"\n## Approach: {approach_label} ##")
+    for p in pollutants:
+        train_for_pollutant(p, df_train_all, df_test_all, 
+                            approach_label, fill_func)
