@@ -334,7 +334,7 @@ for SELECTED_COLUMN in ["pm25_median", "pm10_median", "o3_median", "so2_median",
 
     print(f"\nBest hyperparams for {SELECTED_COLUMN} => hidden_channels={best_combo[0]}, lr={best_combo[1]}, CV RMSE={best_rmse:.4f}\n")
 
-    # (G) Retrain on Full Train Data with Best Hyperparams, Evaluate Test
+    # Retrain on Full Train Data with Best Hyperparams, Evaluate Test
     best_h, best_lr = best_combo
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     final_model = GCNForecast(PAST_DAYS*11, best_h, FUTURE_DAYS).to(device)
