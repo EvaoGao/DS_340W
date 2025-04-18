@@ -320,8 +320,8 @@ if __name__ == '__main__':
   dtw_loss = SoftDTW(use_cuda=False, gamma=0.1)
   lmbda = 0.5
 
-  #for SELECTED_COLUMN in ["pm10_median", "o3_median", "so2_median", "no2_median", "co_median"]: # ["pm25_median", "so2_median", "pm10_median", "no2_median", "o3_median", "co_median", "so2_median"]:
-  for SELECTED_COLUMN in ["so2_median", "no2_median", "co_median"]:   
+  for SELECTED_COLUMN in ["pm25_median","pm10_median", "o3_median", "so2_median", "no2_median", "co_median"]: # ["pm25_median", "so2_median", "pm10_median", "no2_median", "o3_median", "co_median", "so2_median"]:
+  #for SELECTED_COLUMN in ["so2_median", "no2_median", "co_median"]:   
       train_data = CityDataP(SELECTED_COLUMN, "train")
       val_data = CityDataP(SELECTED_COLUMN, "test")
 
