@@ -18,7 +18,7 @@ def root_mean_squared_error(y_true, y_pred):
     return np.sqrt(mean_squared_error(y_true, y_pred))
 
 # Load Data
-df = pd.read_csv("city_pollution_data2.csv")
+df = pd.read_csv("city_pollution_data.csv")
 train_set_dict, test_set_dict = get_train_test_data(df)
 
 train_frames = []

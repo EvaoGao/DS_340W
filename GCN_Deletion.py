@@ -15,7 +15,7 @@ from train import get_train_test_data
 
 
 
-df = pd.read_csv("city_pollution_data2.csv")
+df = pd.read_csv("city_pollution_data.csv")
 train_set, test_set = get_train_test_data(df,method = "mean",TEST_SET_SIZE = 120)
 
 

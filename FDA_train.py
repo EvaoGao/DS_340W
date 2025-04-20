@@ -59,7 +59,7 @@ def get_train_test_data(df):
     return train_set, test_set
 
 # ---------------- Load Data ----------------
-df = pd.read_csv("city_pollution_data2.csv")
+df = pd.read_csv("city_pollution_data.csv")
 train_set, test_set = get_train_test_data(df)
 cities_list = list(train_set.keys())
 all_train = pd.concat([train_set[city] for city in cities_list])

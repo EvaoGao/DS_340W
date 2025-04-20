@@ -28,7 +28,7 @@ warnings.filterwarnings('ignore')
 
 # Data Pre-processing
 
-df = pd.read_csv("city_pollution_data2.csv")
+df = pd.read_csv("city_pollution_data.csv")
 
 DROP_ONEHOT = True
 SEQ_LENGTH = 7

@@ -16,7 +16,7 @@ import copy
 print("NEWWWWWWWWWWWWWWWWWWWWWWWWWWWWW")
 
 
-df = pd.read_csv("city_pollution_data2.csv")
+df = pd.read_csv("city_pollution_data.csv")
 train_set, test_set = get_train_test_data(df,method = "mean")
 
 cities_list = list(train_set.keys())
