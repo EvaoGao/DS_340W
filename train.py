@@ -239,10 +239,8 @@ class CityDataP(torch.utils.data.Dataset):
     target_seq_len = 7
     total_seq = input_seq_len + target_seq_len  # 21 days
     if self.split != "train":
-        # For example, if test data always has 61 rows per city.
         return (61 - total_seq + 1) * len(cities_list)
     else:
-        # For training, you might sum over all cities. One option is:
         return sum([self.dataset[city].shape[0] - total_seq + 1 for city in cities_list])
 
 class CityDataForecast(torch.utils.data.Dataset):
